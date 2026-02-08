@@ -1,11 +1,43 @@
 # 49 protocol only!
 
-import socket, random, sys, time, hashlib, os, re, threading, argparse
+import socket, random, sys, time, hashlib, os, re, threading, argparse, struct
 from struct import pack
 from queue import Queue, Empty
 
 active_connections = 0
 connections_lock = threading.Lock()
+
+# Master servers list
+MASTER_SERVERS = [
+    ("mentality.rip", 27010),
+    ("mentality.rip", 27011),
+    ("ms2.mentality.rip", 27010)
+]
+
+# Query master server
+def get_servers(gamedir, nat=False, timeout=2.0):
+    QUERY = b'1\xff0.0.0.0:0\x00\\nat\\%b\\gamedir\\%b\\clver\\0.21\\buildnum\\0000\x00' % (str(int(nat)).encode(), gamedir.encode())
+    for ms_addr, ms_port in MASTER_SERVERS:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        try:
+            sock.sendto(QUERY, (ms_addr, ms_port))
+            data, _ = sock.recvfrom(4096)
+            sock.close()
+            if not data or len(data) < 6:
+                continue
+            data = data[6:]
+            servers = []
+            for i in range(0, len(data) - 6, 6):
+                ip1, ip2, ip3, ip4, port = struct.unpack(">BBBBH", data[i:i+6])
+                if ip1 == 0 and ip2 == 0 and ip3 == 0 and ip4 == 0:
+                    break
+                servers.append((f"{ip1}.{ip2}.{ip3}.{ip4}", port))
+            return servers
+        except (socket.timeout, socket.error):
+            sock.close()
+            continue
+    return None
 
 # Extract essek server ver number
 def extract_server_number(byte_array):
@@ -222,7 +254,8 @@ def client_worker(servers, nick_queue, chat_queue, build_version, platform, arch
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('servers', nargs='+')
+    parser.add_argument('servers', nargs='*', default=[])
+    parser.add_argument('-g', '--gamedir', help='Scan and send essekers to all server from directory Example: valve, cstrike')
     parser.add_argument('-c', '--connections', type=int, default=5)
     parser.add_argument('-d', '--delay', type=float, default=0.2)
     parser.add_argument('-n', '--names-file', default='names.txt')
@@ -231,7 +264,17 @@ def main():
     parser.add_argument('-p', '--platform', default='win32', help='Essek platform: Example: win32, linux, android, etc.')
     parser.add_argument('-a', '--arch', default='i386', help='Essek arch: Example: i386, i686, arm64, etc.')
     args = parser.parse_args()
-    servers = parse_server_list(args.servers)
+    
+    if args.gamedir:
+        print(f"Scanning servers from '{args.gamedir}'")
+        servers = get_servers(args.gamedir, nat=False, timeout=2.0)
+        if not servers:
+            print("No servers found.")
+            sys.exit(1)
+        print(f"Found {len(servers)} servers.")
+    else:
+        servers = parse_server_list(args.servers)
+    
     print(f"Loaded {len(servers)} servers:")
     for i, (addr, port) in enumerate(servers):
         print(f"  [{i}] {addr}:{port}")
